@@ -1,9 +1,9 @@
 # ============================================================================
 # Project: SAM2695 Emulator for XIAO RP2350
 # File: .github/workflows/build.yml
-# Version: v1.1.1
+# Version: v1.2.0
 # Date: 2026-10-08
-# Description: Fully Verified GitHub Actions Workflow for Building RP2350 UF2
+# Description: Official Spec Build for RP2350 WS2812 & Audio Firmware
 # ============================================================================
 
 name: Build RP2350 UF2
@@ -19,8 +19,6 @@ jobs:
         with:
           submodules: recursive
 
-      # 1. 安定した本家ミラーに固定
-      # 2. C++標準ライブラリ (libstdc++-arm-none-eabi-newlib) を明示的に指定して cassert エラーを根絶
       - name: Install Build Tools & Arm Toolchain
         run: |
           sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list
