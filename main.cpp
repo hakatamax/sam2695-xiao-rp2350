@@ -2,7 +2,7 @@
  * ============================================================================
  * Project: SAM2695 Emulator for XIAO RP2350
  * File: main.cpp
- * Version: v1.2.0 (Official Spec Compliant: WS2812 via PIO)
+ * Version: v1.2.1 (Fully Fixed & Self-Contained)
  * Description: WS2812 RGB LED (GPIO20) & MIDI Pitch Generator (D0 / GPIO0)
  * ============================================================================
  */
@@ -11,7 +11,6 @@
 #include "pico/stdlib.h"
 #include "hardware/pwm.h"
 #include "hardware/clocks.h"
-#include "hardware/pio.h"
 
 // --- ハードウェアピン定義 (Seeed Studio XIAO RP2350 公式仕様) ---
 #define AUDIO_PWM_PIN    0    // D0 (GPIO 0) 音声をPWM波形出力
@@ -43,20 +42,17 @@ const uint8_t color_table[][3] = {
     { 80,  50,   0}  // オレンジ
 };
 
-// --- WS2812 bit-bang タイミング制御 (PIO不要のビルトイン制御) ---
+// WS2812 タイミング制御 (標準GPIOビットバン制御)
 void __no_inline_not_in_flash_func(ws2812_put_pixel)(uint8_t r, uint8_t g, uint8_t b) {
-    // WS2812は GRB 順序でデータを送信
     uint32_t grb = ((uint32_t)g << 16) | ((uint32_t)r << 8) | (uint32_t)b;
 
     for (int i = 23; i >= 0; i--) {
         if ((grb >> i) & 1) {
-            // Bit 1: T1H = 0.8us, T1L = 0.45us
             gpio_put(WS2812_DATA_PIN, 1);
             sleep_us(1);
             gpio_put(WS2812_DATA_PIN, 0);
             sleep_us(1);
         } else {
-            // Bit 0: T0H = 0.4us, T0L = 0.85us
             gpio_put(WS2812_DATA_PIN, 1);
             asm volatile("nop\nnop\nnop\nnop\n");
             gpio_put(WS2812_DATA_PIN, 0);
