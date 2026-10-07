@@ -11,6 +11,12 @@ jobs:
         with:
           submodules: recursive
 
+      # 必要なビルドツールとArmコンパイラのみを最小限インストール (数秒で完了します)
+      - name: Install Build Tools & Arm Toolchain
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends make gcc-arm-none-eabi libnewlib-arm-none-eabi
+
       - name: Setup Pico SDK
         run: |
           git clone --depth 1 --branch 2.1.0 https://github.com/raspberrypi/pico-sdk.git
