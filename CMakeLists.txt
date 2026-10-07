@@ -14,7 +14,6 @@ add_executable(sam2695_emulator
 
 target_link_libraries(sam2695_emulator
     pico_stdlib
-    hardware_uart
     hardware_pwm
     hardware_clocks
 )
