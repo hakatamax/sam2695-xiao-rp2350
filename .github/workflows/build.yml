@@ -26,7 +26,7 @@ jobs:
       - name: Build Firmware
         run: |
           mkdir build && cd build
-          cmake -DPICO_BOARD=xiao_rp2350 -DPICO_SDK_PATH=$GITHUB_WORKSPACE/pico-sdk ..
+          cmake -DPICO_BOARD=pico2 -DPICO_SDK_PATH=$GITHUB_WORKSPACE/pico-sdk ..
           make -j$(nproc)
 
       - name: Upload UF2 Artifact
