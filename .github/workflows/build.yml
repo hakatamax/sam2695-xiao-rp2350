@@ -1,3 +1,11 @@
+# ============================================================================
+# Project: SAM2695 Emulator for XIAO RP2350
+# File: .github/workflows/build.yml
+# Version: v1.0.3
+# Date: 2026-10-08
+# Description: GitHub Actions Workflow for Building RP2350 UF2 Firmware
+# ============================================================================
+
 name: Build RP2350 UF2
 
 on: [push, pull_request]
@@ -11,11 +19,17 @@ jobs:
         with:
           submodules: recursive
 
-      # 必要なビルドツールとArmコンパイラのみを最小限インストール (数秒で完了します)
-      - name: Install Build Tools & Arm Toolchain
+      # C++標準ライブラリ (g++-arm-none-eabi, libstdc++) を含めて最小限インストール
+      - name: Install Build Tools & Arm C++ Toolchain
         run: |
           sudo apt-get update -o Acquire::Retries=3
-          sudo apt-get install -y --no-install-recommends make gcc-arm-none-eabi libnewlib-arm-none-eabi
+          sudo apt-get install -y --no-install-recommends \
+            make \
+            cmake \
+            gcc-arm-none-eabi \
+            g++-arm-none-eabi \
+            libnewlib-arm-none-eabi \
+            libstdc++-arm-none-eabi-newlib
 
       - name: Setup Pico SDK
         run: |
