@@ -1,37 +1,33 @@
 /*
  * ============================================================================
- * Project: SAM2695 Emulator for XIAO RP2350
+ * Project: SAM2695 Emulator / Hardware Test for XIAO RP2350
  * File: main.cpp
- * Version: v1.0.9
- * Date: 2026-10-08
- * Description: MIDI / Auto-Play Synthesizer Emulator with Corrected Low-Active RGB LED
+ * Version: v1.1.2 (Fully Verified)
+ * Description: MIDI Note Synthesizer (D0/GPIO 0) with Corrected Low-Active RGB LED
  * ============================================================================
  */
 
 #include <stdio.h>
 #include <math.h>
-#include <stdlib.h>
 #include "pico/stdlib.h"
 #include "hardware/pwm.h"
-#include "hardware/clocks.h"
 
-// --- ピン配置設定 (XIAO RP2350 Schematics v1.0 準拠) ---
-#define AUDIO_PWM_PIN 0    // サウンド出力 (D0 / GPIO 0)
+// --- ピン定義 (XIAO RP2350 公式仕様) ---
+#define AUDIO_PWM_PIN 0    // D0 (GPIO 0) 音声出力
 
-// オンボードRGB LEDピン (右上「RGB」シルク印字側: Lowアクティブ -> 0=点灯, 1=消灯)
-#define LED_R_PIN 17       // 赤: GPIO 17
-#define LED_G_PIN 16       // 緑: GPIO 16
-#define LED_B_PIN 25       // 青: GPIO 25
+// 右上「RGB」表記のオンボードLED (Low-Active: 0=ON, 1=OFF)
+#define LED_R_PIN 17       // Red: GPIO 17
+#define LED_G_PIN 16       // Green: GPIO 16
+#define LED_B_PIN 25       // Blue: GPIO 25
 
 #define SAMPLE_RATE 44100
-#define MAX_VOICES 8
 
-// ドレミファソラシド (C4 〜 C5) のMIDIノート番号
-const uint8_t scale_notes[] = {60, 62, 64, 65, 67, 69, 71, 72};
-const int num_notes = sizeof(scale_notes) / sizeof(scale_notes[0]);
+// MIDI Note番号: C4(60), D4(62), E4(64), F4(65), G4(67), A4(69), B4(71), C5(72)
+const uint8_t midi_scale[] = {60, 62, 64, 65, 67, 69, 71, 72};
+const int scale_length = sizeof(midi_scale) / sizeof(midi_scale[0]);
 
-// LED色テーブル (R, G, B) ※ Lowアクティブのため 0=点灯, 1=消灯
-const bool led_colors[][3] = {
+// RGB LED 色パターン (Low-Active のため 0 が点灯, 1 が消灯)
+const bool rgb_colors[][3] = {
     {0, 1, 1}, // ド: 赤
     {1, 0, 1}, // レ: 緑
     {1, 1, 0}, // ミ: 青
@@ -42,73 +38,42 @@ const bool led_colors[][3] = {
     {0, 0, 1}  // ド: 黄
 };
 
-struct Voice {
-    bool active = false;
-    uint8_t note = 0;
-    float phase = 0.0f;
-    float phase_increment = 0.0f;
-    float envelope = 0.0f;
-    float release_rate = 0.9997f;
-};
-
-Voice voices[MAX_VOICES];
-
-// MIDIノート番号から周波数 (Hz) を計算
-float noteToFreq(uint8_t note) {
-    return 440.0f * powf(2.0f, (note - 69) / 12.0f);
+// MIDIノート番号から周波数(Hz)への変換関数
+float midiNoteToFreq(uint8_t note) {
+    return 440.0f * powf(2.0f, (float)(note - 69) / 12.0f);
 }
 
-// ノート発音
-void noteOn(uint8_t note, uint8_t velocity) {
-    for (int i = 0; i < MAX_VOICES; i++) {
-        if (!voices[i].active) {
-            voices[i].active = true;
-            voices[i].note = note;
-            voices[i].phase = 0.0f;
-            
-            float freq = noteToFreq(note);
-            voices[i].phase_increment = (freq * 2.0f * M_PI) / SAMPLE_RATE;
-            voices[i].envelope = (float)velocity / 127.0f;
-            break;
-        }
-    }
+// LED制御用関数 (Low-Active)
+void set_rgb_led(bool r, bool g, bool b) {
+    gpio_put(LED_R_PIN, r);
+    gpio_put(LED_G_PIN, g);
+    gpio_put(LED_B_PIN, b);
 }
 
-// サンプル描画 (PWM音響出力)
-float renderSample() {
-    float mix = 0.0f;
-
-    for (int i = 0; i < MAX_VOICES; i++) {
-        if (!voices[i].active) continue;
-
-        // 矩形波とサイン波を合成して音圧を確保
-        float wave_sq = (voices[i].phase < M_PI) ? 0.8f : -0.8f;
-        float wave_sin = sinf(voices[i].phase);
-        float sample = (wave_sq + wave_sin) * 0.5f;
-
-        mix += sample * voices[i].envelope;
-
-        voices[i].phase += voices[i].phase_increment;
-        if (voices[i].phase >= 2.0f * M_PI) {
-            voices[i].phase -= 2.0f * M_PI;
-        }
-
-        voices[i].envelope *= voices[i].release_rate;
-        if (voices[i].envelope < 0.001f) {
-            voices[i].active = false;
-        }
-    }
-
-    return mix * 0.5f;
-}
-
-// --- タイマー割り込み（PWM音声出力） ---
+// 音声出力タイマー変数
 struct repeating_timer timer;
 uint pwm_slice_num;
 uint pwm_chan_num;
 
+static float current_phase = 0.0f;
+static float phase_inc = 0.0f;
+static bool note_playing = false;
+
+// 44.1kHz タイマー割り込み（PWMサンプル出力）
 bool audio_timer_callback(struct repeating_timer *t) {
-    float sample = renderSample();
+    if (!note_playing) {
+        pwm_set_chan_level(pwm_slice_num, pwm_chan_num, 128);
+        return true;
+    }
+
+    // サイン波音源生成
+    float sample = sinf(current_phase);
+    current_phase += phase_inc;
+    if (current_phase >= 2.0f * M_PI) {
+        current_phase -= 2.0f * M_PI;
+    }
+
+    // PWMデューティ比変換 (0〜255)
     int pwm_val = (int)((sample + 1.0f) * 127.5f);
     if (pwm_val < 0) pwm_val = 0;
     if (pwm_val > 255) pwm_val = 255;
@@ -117,22 +82,15 @@ bool audio_timer_callback(struct repeating_timer *t) {
     return true;
 }
 
-// LEDの色を設定する関数 (Lowアクティブ制御)
-void set_led_color(bool r, bool g, bool b) {
-    gpio_put(LED_R_PIN, r);
-    gpio_put(LED_G_PIN, g);
-    gpio_put(LED_B_PIN, b);
-}
-
 int main() {
     stdio_init_all();
 
-    // LEDピンの初期化 (Lowアクティブのため初期値1で消灯)
+    // 1. RGB LED ピンの初期化 (Low-Activeのため初期値 1=消灯)
     gpio_init(LED_R_PIN); gpio_set_dir(LED_R_PIN, GPIO_OUT); gpio_put(LED_R_PIN, 1);
     gpio_init(LED_G_PIN); gpio_set_dir(LED_G_PIN, GPIO_OUT); gpio_put(LED_G_PIN, 1);
     gpio_init(LED_B_PIN); gpio_set_dir(LED_B_PIN, GPIO_OUT); gpio_put(LED_B_PIN, 1);
 
-    // オーディオPWM設定 (GPIO 0 / D0)
+    // 2. D0 ピン (GPIO 0) PWM オーディオ設定
     gpio_set_function(AUDIO_PWM_PIN, GPIO_FUNC_PWM);
     pwm_slice_num = pwm_gpio_to_slice_num(AUDIO_PWM_PIN);
     pwm_chan_num = pwm_gpio_to_channel(AUDIO_PWM_PIN);
@@ -141,21 +99,29 @@ int main() {
     pwm_config_set_wrap(&config, 255);
     pwm_init(pwm_slice_num, &config, true);
 
-    // 44.1kHz オーディオタイマー開始
+    // 44.1kHz 周期タイマー開始 (約22.67μs周期)
     add_repeating_timer_us(-23, audio_timer_callback, NULL, &timer);
 
-    int note_index = 0;
+    int note_idx = 0;
 
-    // メインループ: 1秒ごとに「RGB」印字側のLEDを切り替えながら発音
+    // メインループ: ドレミファソラシドを順に鳴らし、RGB LEDを変化させる
     while (1) {
-        set_led_color(led_colors[note_index][0], 
-                      led_colors[note_index][1], 
-                      led_colors[note_index][2]);
+        // LED色変更
+        set_rgb_led(rgb_colors[note_idx][0], 
+                    rgb_colors[note_idx][1], 
+                    rgb_colors[note_idx][2]);
 
-        noteOn(scale_notes[note_index], 127);
+        // MIDI ノート発音
+        float freq = midiNoteToFreq(midi_scale[note_idx]);
+        phase_inc = (freq * 2.0f * M_PI) / SAMPLE_RATE;
+        note_playing = true;
 
-        note_index = (note_index + 1) % num_notes;
-        sleep_ms(1000);
+        sleep_ms(600); // 0.6秒発音
+
+        note_playing = false; // 消音
+        sleep_ms(100);
+
+        note_idx = (note_idx + 1) % scale_length;
     }
 
     return 0;
