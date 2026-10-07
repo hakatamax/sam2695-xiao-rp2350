@@ -2,9 +2,9 @@
  * ============================================================================
  * Project: SAM2695 Emulator for XIAO RP2350
  * File: main.cpp
- * Version: v1.0.2
+ * Version: v1.0.3
  * Date: 2026-10-08
- * Description: MIDI / Auto-Play Synthesizer Emulator with RGB LED Status Indicator
+ * Description: MIDI / Auto-Play Synthesizer Emulator with Corrected RGB LED Logic
  * ============================================================================
  */
 
@@ -15,13 +15,13 @@
 #include "hardware/pwm.h"
 #include "hardware/clocks.h"
 
-// --- ピン配置設定 (XIAO RP2350) ---
+// --- ピン配置設定 (XIAO RP2350 Schematics v1.0 準拠) ---
 #define AUDIO_PWM_PIN 0    // サウンド出力 (D0 / GPIO 0)
 
-// オンボードRGB LEDピン (XIAO RP2350: Lowアクティブ)
-#define LED_R_PIN 16
-#define LED_G_PIN 17
-#define LED_B_PIN 25
+// オンボードRGB LEDピン (XIAO RP2350: Highアクティブ)
+#define LED_R_PIN 17       // 赤: GPIO 17
+#define LED_G_PIN 16       // 緑: GPIO 16
+#define LED_B_PIN 25       // 青: GPIO 25
 
 #define SAMPLE_RATE 44100
 #define MAX_VOICES 8
@@ -30,16 +30,16 @@
 const uint8_t scale_notes[] = {60, 62, 64, 65, 67, 69, 71, 72};
 const int num_notes = sizeof(scale_notes) / sizeof(scale_notes[0]);
 
-// LED色テーブル (R, G, B) ※ Lowアクティブのため 0が点灯, 1が消灯
+// LED色テーブル (R, G, B) ※ 1で点灯、0で消灯
 const bool led_colors[][3] = {
-    {0, 1, 1}, // ド: 赤
-    {1, 0, 1}, // レ: 緑
-    {1, 1, 0}, // ミ: 青
-    {0, 0, 1}, // ファ: 黄
-    {1, 0, 0}, // ソ: シアン
-    {0, 1, 0}, // ラ: マゼンタ
-    {0, 0, 0}, // シ: 白
-    {0, 0, 1}  // ド: 黄
+    {1, 0, 0}, // ド: 赤
+    {0, 1, 0}, // レ: 緑
+    {0, 0, 1}, // ミ: 青
+    {1, 1, 0}, // ファ: 黄
+    {0, 1, 1}, // ソ: シアン
+    {1, 0, 1}, // ラ: マゼンタ
+    {1, 1, 1}, // シ: 白
+    {1, 1, 0}  // ド: 黄
 };
 
 struct Voice {
@@ -74,7 +74,7 @@ void noteOn(uint8_t note, uint8_t velocity) {
     }
 }
 
-// サンプル描画 (音量を稼ぐため矩形波とサイン波を合成)
+// サンプル描画 (PWM音響出力)
 float renderSample() {
     float mix = 0.0f;
 
@@ -130,7 +130,7 @@ int main() {
     gpio_init(LED_R_PIN); gpio_set_dir(LED_R_PIN, GPIO_OUT);
     gpio_init(LED_G_PIN); gpio_set_dir(LED_G_PIN, GPIO_OUT);
     gpio_init(LED_B_PIN); gpio_set_dir(LED_B_PIN, GPIO_OUT);
-    set_led_color(1, 1, 1); // 初期状態は消灯
+    set_led_color(0, 0, 0); // 初期状態は消灯 (0)
 
     // オーディオPWM設定 (GPIO 0)
     gpio_set_function(AUDIO_PWM_PIN, GPIO_FUNC_PWM);
@@ -146,14 +146,12 @@ int main() {
 
     int note_index = 0;
 
-    // メインループ: 1秒ごとにLEDを変更しながら発音
+    // メインループ: 1秒ごとにLEDを正しく色変更しながら発音
     while (1) {
-        // LEDの色を変更
         set_led_color(led_colors[note_index][0], 
                       led_colors[note_index][1], 
                       led_colors[note_index][2]);
 
-        // 音を鳴らす
         noteOn(scale_notes[note_index], 127);
 
         note_index = (note_index + 1) % num_notes;
