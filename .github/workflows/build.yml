@@ -29,8 +29,18 @@ jobs:
           cmake -DPICO_BOARD=pico2 -DPICO_SDK_PATH=$GITHUB_WORKSPACE/pico-sdk ..
           make -j$(nproc)
 
+      - name: Rename UF2 with Timestamp
+        run: |
+          # JST (UTC+9) のタイムスタンプ YYYYMMDD_HHMMSS を取得
+          TIMESTAMP=$(TZ=Asia/Tokyo date +'%Y%m%d_%H%M%S')
+          cd build
+          ORIGINAL_UF2=$(ls *.uf2 | head -n 1)
+          NEW_UF2="${TIMESTAMP}_${ORIGINAL_UF2}"
+          mv "$ORIGINAL_UF2" "$NEW_UF2"
+          echo "RENAMED_UF2_NAME=$NEW_UF2" >> $GITHUB_ENV
+
       - name: Upload UF2 Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sam2695_emulator_uf2
+          name: ${{ env.RENAMED_UF2_NAME }}
           path: build/*.uf2
