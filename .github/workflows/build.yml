@@ -1,7 +1,7 @@
 # ============================================================================
 # Project: SAM2695 Emulator for XIAO RP2350
 # File: .github/workflows/build.yml
-# Version: v1.0.7
+# Version: v1.0.8
 # Date: 2026-10-08
 # Description: GitHub Actions Workflow for Building RP2350 UF2 Firmware
 # ============================================================================
@@ -19,16 +19,23 @@ jobs:
         with:
           submodules: recursive
 
-      # Raspberry Pi公式のアクションでArmツールチェーンとPico SDK環境を一括セットアップ
-      - name: Setup Pico SDK & Arm Toolchain
-        uses: raspberrypi/pico-sdk-tools-action@v1
-        with:
-          sdk-version: '2.1.0'
+      # Pico SDK 2.x のビルドに必要な標準ツールチェーンを一括インストール
+      - name: Install Build Tools & Arm Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential
+
+      - name: Setup Pico SDK
+        run: |
+          git clone --depth 1 --branch 2.1.0 https://github.com/raspberrypi/pico-sdk.git
+          cd pico-sdk
+          git submodule update --init
+          echo "PICO_SDK_PATH=$GITHUB_WORKSPACE/pico-sdk" >> $GITHUB_ENV
 
       - name: Build Firmware
         run: |
           mkdir build && cd build
-          cmake -DPICO_BOARD=pico2 ..
+          cmake -DPICO_BOARD=pico2 -DPICO_SDK_PATH=$GITHUB_WORKSPACE/pico-sdk ..
           make -j$(nproc)
 
       - name: Rename UF2 with Timestamp
