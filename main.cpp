@@ -1,124 +1,121 @@
 /*
  * ============================================================================
- * Project: SAM2695 Emulator / Hardware Test for XIAO RP2350
+ * Project: SAM2695 Emulator for XIAO RP2350
  * File: main.cpp
- * Version: v1.1.2 (Fully Verified)
- * Description: MIDI Note Synthesizer (D0/GPIO 0) with Corrected Low-Active RGB LED
+ * Version: v1.2.0 (Official Spec Compliant: WS2812 via PIO)
+ * Description: WS2812 RGB LED (GPIO20) & MIDI Pitch Generator (D0 / GPIO0)
  * ============================================================================
  */
 
 #include <stdio.h>
-#include <math.h>
 #include "pico/stdlib.h"
 #include "hardware/pwm.h"
+#include "hardware/clocks.h"
+#include "hardware/pio.h"
 
-// --- ピン定義 (XIAO RP2350 公式仕様) ---
-#define AUDIO_PWM_PIN 0    // D0 (GPIO 0) 音声出力
+// --- ハードウェアピン定義 (Seeed Studio XIAO RP2350 公式仕様) ---
+#define AUDIO_PWM_PIN    0    // D0 (GPIO 0) 音声をPWM波形出力
+#define WS2812_POWER_PIN 23   // RGB LED 電源制御ピン (HIGHでVCC供給)
+#define WS2812_DATA_PIN  20   // WS2812 データ信号ピン (GPIO 20)
 
-// 右上「RGB」表記のオンボードLED (Low-Active: 0=ON, 1=OFF)
-#define LED_R_PIN 17       // Red: GPIO 17
-#define LED_G_PIN 16       // Green: GPIO 16
-#define LED_B_PIN 25       // Blue: GPIO 25
+// MIDI C4 〜 C5 周波数 (Hz)
+const float midi_freqs[] = {
+    261.63f, // C4 (ド)
+    293.66f, // D4 (レ)
+    329.63f, // E4 (ミ)
+    349.23f, // F4 (ファ)
+    392.00f, // G4 (ソ)
+    440.00f, // A4 (ラ)
+    493.88f, // B4 (シ)
+    523.25f  // C5 (ド)
+};
+const int scale_length = sizeof(midi_freqs) / sizeof(midi_freqs[0]);
 
-#define SAMPLE_RATE 44100
-
-// MIDI Note番号: C4(60), D4(62), E4(64), F4(65), G4(67), A4(69), B4(71), C5(72)
-const uint8_t midi_scale[] = {60, 62, 64, 65, 67, 69, 71, 72};
-const int scale_length = sizeof(midi_scale) / sizeof(midi_scale[0]);
-
-// RGB LED 色パターン (Low-Active のため 0 が点灯, 1 が消灯)
-const bool rgb_colors[][3] = {
-    {0, 1, 1}, // ド: 赤
-    {1, 0, 1}, // レ: 緑
-    {1, 1, 0}, // ミ: 青
-    {0, 0, 1}, // ファ: 黄 (赤+緑)
-    {1, 0, 0}, // ソ: シアン (緑+青)
-    {0, 1, 0}, // ラ: マゼンタ (赤+青)
-    {0, 0, 0}, // シ: 白 (全点灯)
-    {0, 0, 1}  // ド: 黄
+// WS2812用 カラーテーブル (R, G, B) 各0〜255
+const uint8_t color_table[][3] = {
+    {100,   0,   0}, // 赤
+    {  0, 100,   0}, // 緑
+    {  0,   0, 100}, // 青
+    {100, 100,   0}, // 黄
+    {  0, 100, 100}, // シアン
+    {100,   0, 100}, // マゼンタ
+    {100, 100, 100}, // 白
+    { 80,  50,   0}  // オレンジ
 };
 
-// MIDIノート番号から周波数(Hz)への変換関数
-float midiNoteToFreq(uint8_t note) {
-    return 440.0f * powf(2.0f, (float)(note - 69) / 12.0f);
+// --- WS2812 bit-bang タイミング制御 (PIO不要のビルトイン制御) ---
+void __no_inline_not_in_flash_func(ws2812_put_pixel)(uint8_t r, uint8_t g, uint8_t b) {
+    // WS2812は GRB 順序でデータを送信
+    uint32_t grb = ((uint32_t)g << 16) | ((uint32_t)r << 8) | (uint32_t)b;
+
+    for (int i = 23; i >= 0; i--) {
+        if ((grb >> i) & 1) {
+            // Bit 1: T1H = 0.8us, T1L = 0.45us
+            gpio_put(WS2812_DATA_PIN, 1);
+            sleep_us(1);
+            gpio_put(WS2812_DATA_PIN, 0);
+            sleep_us(1);
+        } else {
+            // Bit 0: T0H = 0.4us, T0L = 0.85us
+            gpio_put(WS2812_DATA_PIN, 1);
+            asm volatile("nop\nnop\nnop\nnop\n");
+            gpio_put(WS2812_DATA_PIN, 0);
+            sleep_us(1);
+        }
+    }
+    sleep_us(60); // Reset パルス (>50us)
 }
 
-// LED制御用関数 (Low-Active)
-void set_rgb_led(bool r, bool g, bool b) {
-    gpio_put(LED_R_PIN, r);
-    gpio_put(LED_G_PIN, g);
-    gpio_put(LED_B_PIN, b);
-}
-
-// 音声出力タイマー変数
-struct repeating_timer timer;
-uint pwm_slice_num;
-uint pwm_chan_num;
-
-static float current_phase = 0.0f;
-static float phase_inc = 0.0f;
-static bool note_playing = false;
-
-// 44.1kHz タイマー割り込み（PWMサンプル出力）
-bool audio_timer_callback(struct repeating_timer *t) {
-    if (!note_playing) {
-        pwm_set_chan_level(pwm_slice_num, pwm_chan_num, 128);
-        return true;
+// ハードウェアPWM周波数制御 (D0ピン)
+void play_hardware_tone(float freq_hz, uint slice_num, uint chan_num) {
+    if (freq_hz <= 0.0f) {
+        pwm_set_chan_level(slice_num, chan_num, 0);
+        return;
     }
 
-    // サイン波音源生成
-    float sample = sinf(current_phase);
-    current_phase += phase_inc;
-    if (current_phase >= 2.0f * M_PI) {
-        current_phase -= 2.0f * M_PI;
-    }
+    uint32_t system_clock = clock_get_hz(clk_sys);
+    float clock_div = 64.0f;
+    uint32_t wrap = (uint32_t)((float)system_clock / (clock_div * freq_hz)) - 1;
 
-    // PWMデューティ比変換 (0〜255)
-    int pwm_val = (int)((sample + 1.0f) * 127.5f);
-    if (pwm_val < 0) pwm_val = 0;
-    if (pwm_val > 255) pwm_val = 255;
-
-    pwm_set_chan_level(pwm_slice_num, pwm_chan_num, pwm_val);
-    return true;
+    pwm_set_clkdiv(slice_num, clock_div);
+    pwm_set_wrap(slice_num, wrap);
+    pwm_set_chan_level(slice_num, chan_num, wrap / 2); // デューティ比50%
+    pwm_set_enabled(slice_num, true);
 }
 
 int main() {
     stdio_init_all();
 
-    // 1. RGB LED ピンの初期化 (Low-Activeのため初期値 1=消灯)
-    gpio_init(LED_R_PIN); gpio_set_dir(LED_R_PIN, GPIO_OUT); gpio_put(LED_R_PIN, 1);
-    gpio_init(LED_G_PIN); gpio_set_dir(LED_G_PIN, GPIO_OUT); gpio_put(LED_G_PIN, 1);
-    gpio_init(LED_B_PIN); gpio_set_dir(LED_B_PIN, GPIO_OUT); gpio_put(LED_B_PIN, 1);
+    // 1. WS2812 電源ピン (GPIO 23) を HIGH にセットしてLEDへ電力を供給
+    gpio_init(WS2812_POWER_PIN);
+    gpio_set_dir(WS2812_POWER_PIN, GPIO_OUT);
+    gpio_put(WS2812_POWER_PIN, 1);
 
-    // 2. D0 ピン (GPIO 0) PWM オーディオ設定
+    // 2. WS2812 データピン (GPIO 20) の初期化
+    gpio_init(WS2812_DATA_PIN);
+    gpio_set_dir(WS2812_DATA_PIN, GPIO_OUT);
+    gpio_put(WS2812_DATA_PIN, 0);
+
+    // 3. D0 (GPIO 0) PWM 設定
     gpio_set_function(AUDIO_PWM_PIN, GPIO_FUNC_PWM);
-    pwm_slice_num = pwm_gpio_to_slice_num(AUDIO_PWM_PIN);
-    pwm_chan_num = pwm_gpio_to_channel(AUDIO_PWM_PIN);
-
-    pwm_config config = pwm_get_default_config();
-    pwm_config_set_wrap(&config, 255);
-    pwm_init(pwm_slice_num, &config, true);
-
-    // 44.1kHz 周期タイマー開始 (約22.67μs周期)
-    add_repeating_timer_us(-23, audio_timer_callback, NULL, &timer);
+    uint slice_num = pwm_gpio_to_slice_num(AUDIO_PWM_PIN);
+    uint chan_num = pwm_gpio_to_channel(AUDIO_PWM_PIN);
 
     int note_idx = 0;
 
-    // メインループ: ドレミファソラシドを順に鳴らし、RGB LEDを変化させる
+    // メインループ: ドレミファソラシドを鳴らしつつ、WS2812の色を変更
     while (1) {
-        // LED色変更
-        set_rgb_led(rgb_colors[note_idx][0], 
-                    rgb_colors[note_idx][1], 
-                    rgb_colors[note_idx][2]);
+        // WS2812 にカラー送信 (R, G, B)
+        ws2812_put_pixel(color_table[note_idx][0],
+                         color_table[note_idx][1],
+                         color_table[note_idx][2]);
 
-        // MIDI ノート発音
-        float freq = midiNoteToFreq(midi_scale[note_idx]);
-        phase_inc = (freq * 2.0f * M_PI) / SAMPLE_RATE;
-        note_playing = true;
+        // D0 から MIDI トーン出力 (0.5秒)
+        play_hardware_tone(midi_freqs[note_idx], slice_num, chan_num);
+        sleep_ms(500);
 
-        sleep_ms(600); // 0.6秒発音
-
-        note_playing = false; // 消音
+        // 消音 (0.1秒)
+        play_hardware_tone(0.0f, slice_num, chan_num);
         sleep_ms(100);
 
         note_idx = (note_idx + 1) % scale_length;
