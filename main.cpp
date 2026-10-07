@@ -2,9 +2,9 @@
  * ============================================================================
  * Project: SAM2695 Emulator for XIAO RP2350
  * File: main.cpp
- * Version: v1.0.1
+ * Version: v1.0.2
  * Date: 2026-10-08
- * Description: MIDI / Auto-Play Synthesizer Emulator using PWM Audio Output
+ * Description: MIDI / Auto-Play Synthesizer Emulator with RGB LED Status Indicator
  * ============================================================================
  */
 
@@ -18,12 +18,29 @@
 // --- ピン配置設定 (XIAO RP2350) ---
 #define AUDIO_PWM_PIN 0    // サウンド出力 (D0 / GPIO 0)
 
+// オンボードRGB LEDピン (XIAO RP2350: Lowアクティブ)
+#define LED_R_PIN 16
+#define LED_G_PIN 17
+#define LED_B_PIN 25
+
 #define SAMPLE_RATE 44100
 #define MAX_VOICES 8
 
 // ドレミファソラシド (C4 〜 C5) のMIDIノート番号
 const uint8_t scale_notes[] = {60, 62, 64, 65, 67, 69, 71, 72};
 const int num_notes = sizeof(scale_notes) / sizeof(scale_notes[0]);
+
+// LED色テーブル (R, G, B) ※ Lowアクティブのため 0が点灯, 1が消灯
+const bool led_colors[][3] = {
+    {0, 1, 1}, // ド: 赤
+    {1, 0, 1}, // レ: 緑
+    {1, 1, 0}, // ミ: 青
+    {0, 0, 1}, // ファ: 黄
+    {1, 0, 0}, // ソ: シアン
+    {0, 1, 0}, // ラ: マゼンタ
+    {0, 0, 0}, // シ: 白
+    {0, 0, 1}  // ド: 黄
+};
 
 struct Voice {
     bool active = false;
@@ -57,34 +74,31 @@ void noteOn(uint8_t note, uint8_t velocity) {
     }
 }
 
-// サンプル描画 (矩形波+サイン波で音量を確保)
+// サンプル描画 (音量を稼ぐため矩形波とサイン波を合成)
 float renderSample() {
     float mix = 0.0f;
 
     for (int i = 0; i < MAX_VOICES; i++) {
         if (!voices[i].active) continue;
 
-        // 音量をしっかり出すため矩形波とサイン波を合成
-        float wave_sq = (voices[i].phase < M_PI) ? 0.6f : -0.6f;
+        float wave_sq = (voices[i].phase < M_PI) ? 0.7f : -0.7f;
         float wave_sin = sinf(voices[i].phase);
         float sample = (wave_sq + wave_sin) * 0.5f;
 
         mix += sample * voices[i].envelope;
 
-        // 位相更新
         voices[i].phase += voices[i].phase_increment;
         if (voices[i].phase >= 2.0f * M_PI) {
             voices[i].phase -= 2.0f * M_PI;
         }
 
-        // エンベロープ減衰
         voices[i].envelope *= voices[i].release_rate;
         if (voices[i].envelope < 0.001f) {
             voices[i].active = false;
         }
     }
 
-    return mix * 0.3f; // 音量ゲイン調整
+    return mix * 0.4f;
 }
 
 // --- タイマー割り込み（PWM音声出力） ---
@@ -102,8 +116,21 @@ bool audio_timer_callback(struct repeating_timer *t) {
     return true;
 }
 
+// LEDの色を設定する関数
+void set_led_color(bool r, bool g, bool b) {
+    gpio_put(LED_R_PIN, r);
+    gpio_put(LED_G_PIN, g);
+    gpio_put(LED_B_PIN, b);
+}
+
 int main() {
     stdio_init_all();
+
+    // LEDピンの初期化
+    gpio_init(LED_R_PIN); gpio_set_dir(LED_R_PIN, GPIO_OUT);
+    gpio_init(LED_G_PIN); gpio_set_dir(LED_G_PIN, GPIO_OUT);
+    gpio_init(LED_B_PIN); gpio_set_dir(LED_B_PIN, GPIO_OUT);
+    set_led_color(1, 1, 1); // 初期状態は消灯
 
     // オーディオPWM設定 (GPIO 0)
     gpio_set_function(AUDIO_PWM_PIN, GPIO_FUNC_PWM);
@@ -111,7 +138,7 @@ int main() {
     pwm_chan_num = pwm_gpio_to_channel(AUDIO_PWM_PIN);
 
     pwm_config config = pwm_get_default_config();
-    pwm_config_set_wrap(&config, 255); // 8-bit 分解能
+    pwm_config_set_wrap(&config, 255);
     pwm_init(pwm_slice_num, &config, true);
 
     // 44.1kHz オーディオタイマー開始
@@ -119,9 +146,16 @@ int main() {
 
     int note_index = 0;
 
-    // 1秒ごとにドレミファソラシドを自動再生
+    // メインループ: 1秒ごとにLEDを変更しながら発音
     while (1) {
+        // LEDの色を変更
+        set_led_color(led_colors[note_index][0], 
+                      led_colors[note_index][1], 
+                      led_colors[note_index][2]);
+
+        // 音を鳴らす
         noteOn(scale_notes[note_index], 127);
+
         note_index = (note_index + 1) % num_notes;
         sleep_ms(1000);
     }
