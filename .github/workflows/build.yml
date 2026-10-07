@@ -7,28 +7,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
 
       - name: Install Arm GNU Toolchain & CMake
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential cmake
+          sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential cmake ninja-build
 
       - name: Setup Pico SDK
         run: |
-          git clone --recurse-submodules https://github.com/raspberrypi/pico-sdk.git
+          git clone --depth 1 --branch 2.1.0 https://github.com/raspberrypi/pico-sdk.git
+          cd pico-sdk
+          git submodule update --init
           echo "PICO_SDK_PATH=$GITHUB_WORKSPACE/pico-sdk" >> $GITHUB_ENV
 
       - name: Build Firmware
         run: |
           mkdir build && cd build
-          cmake -DPICO_BOARD=xiao_rp2350 ..
+          cmake -DPICO_BOARD=xiao_rp2350 -DPICO_SDK_PATH=$GITHUB_WORKSPACE/pico-sdk ..
           make -j$(nproc)
 
       - name: Upload UF2 Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: sam2695_emulator_uf2
           path: build/*.uf2
